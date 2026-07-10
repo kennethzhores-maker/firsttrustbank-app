@@ -3,6 +3,7 @@ import { Shield, Sun, Moon, LogOut, Plus, Loader2, AlertCircle, Trash2 } from "l
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase, EDGE_FUNCTION_NAME } from "@/lib/supabase";
+import { BANK_NAME } from "@/lib/brand";
 import { Save, Check } from "lucide-react";
 
 
@@ -192,7 +193,7 @@ export default function AdminDashboard() {
       <header className="flex items-center justify-between px-4 md:px-8 py-4 border-b">
         <div className="flex items-center gap-2">
           <Shield className="h-6 w-6 text-primary" />
-          <span className="font-bold">Admin Panel</span>
+          <span className="font-bold">{BANK_NAME}</span>
           <span className="ml-2 px-2 py-0.5 rounded-md bg-destructive/20 text-destructive text-xs font-semibold">ADMIN</span>
         </div>
         <div className="flex items-center gap-2">

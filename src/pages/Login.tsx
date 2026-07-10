@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Loader2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
+import { BANK_NAME } from "@/lib/brand";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -37,6 +38,7 @@ export default function Login() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-4">
       <div className="glass-card-elevated w-full max-w-md p-6 md:p-8 animate-fade-scale">
+        <p className="text-sm font-semibold text-primary mb-2">{BANK_NAME}</p>
         <h2 className="text-xl font-bold mb-1">Create Your Debit Card</h2>
         <p className="text-sm text-muted-foreground mb-6">Please Enter your Email and password</p>
 

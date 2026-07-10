@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Shield, Loader2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { BANK_NAME } from "@/lib/brand";
 
 export default function AdminLogin() {
   const navigate = useNavigate();
@@ -50,6 +51,7 @@ export default function AdminLogin() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-4">
       <div className="glass-card-elevated w-full max-w-md p-6 md:p-8 animate-fade-scale">
+        <p className="text-center text-sm font-semibold text-primary mb-4">{BANK_NAME}</p>
         <div className="flex items-center justify-center mb-6">
           <Shield className="h-8 w-8 text-primary" />
           <span className="ml-2 px-2 py-0.5 rounded-md bg-destructive/20 text-destructive text-xs font-semibold">ADMIN</span>

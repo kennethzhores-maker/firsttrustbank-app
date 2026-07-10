@@ -7,6 +7,7 @@ import ActivationModal from "@/components/ActivationModal";
 import ServiceUnavailableModal from "@/components/ServiceUnavailableModal";
 import { useBankData, BankDataProvider } from "@/hooks/use-bank-data";
 import { useAuth } from "@/hooks/useAuth";
+import { BANK_NAME } from "@/lib/brand";
 import { Loader2 } from "lucide-react";
 
 
@@ -116,7 +117,7 @@ function DashboardView({
       {/* Header */}
       <header className="flex items-center justify-between px-4 md:px-8 py-4 border-b">
         <div className="flex items-center gap-2">
-          <span className="text-lg font-bold">Dashboard</span>
+          <span className="text-lg font-bold">{BANK_NAME}</span>
         </div>
 
         <div className="flex items-center gap-2">
