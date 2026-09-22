@@ -63,4 +63,4 @@ export function formatAuthError(error: unknown): string {
 }
 
 export const CONNECTION_PROBLEM_MESSAGE =
-  "Connection problem. Your account data could not be loaded. Tap Retry to try again.";
+  "Live connection interrupted. Showing your last saved account details — tap Retry to refresh.";

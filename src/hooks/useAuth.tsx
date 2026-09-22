@@ -315,6 +315,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // Only recover after an unexpected sign-out of an active session.
       if (event === "SIGNED_OUT" && hadSessionRef.current) {
+        // Keep UI session instantly from backup before any async work.
+        const backup = readSessionBackup();
+        if (backup) {
+          applySession(sessionFromBackup(backup), { backup: false });
+          setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+        }
         void recoverSession();
       }
     });

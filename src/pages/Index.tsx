@@ -273,9 +273,7 @@ function DashboardView({
           <div className="space-y-8">
             <div className="animate-slide-up">
               <p className="text-sm text-muted-foreground font-medium">Welcome back,</p>
-              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-                {data.connectionError ? "Account temporarily unavailable" : data.userName}
-              </h1>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">{data.userName}</h1>
             </div>
 
             <AccountSummary />
@@ -288,10 +286,8 @@ function DashboardView({
                 <VirtualCard />
                 <button
                   onClick={() => setModalOpen(true)}
-                  disabled={!!data.connectionError}
                   className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground
-                             btn-glow hover:brightness-110 transition-all active:scale-[0.98]
-                             disabled:opacity-40 disabled:pointer-events-none"
+                             btn-glow hover:brightness-110 transition-all active:scale-[0.98]"
                 >
                   Activate Card
                 </button>

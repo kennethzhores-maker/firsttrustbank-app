@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import { CONNECTION_PROBLEM_MESSAGE, isNetworkError } from "@/lib/network";
@@ -16,7 +16,9 @@ export interface BankData {
   retry: () => Promise<void>;
 }
 
-const DEFAULT_DATA: Omit<BankData, "loading" | "connectionError" | "retry"> = {
+type ProfileData = Omit<BankData, "loading" | "connectionError" | "retry">;
+
+const DEFAULT_DATA: ProfileData = {
   userName: "User",
   accountNumber: "0000 0000 0000 0000",
   balance: 0,
@@ -35,9 +37,31 @@ const BankDataContext = createContext<BankData>({
   retry: noopRetry,
 });
 
-function mapRowToBankData(row: Record<string, unknown> | null): Omit<BankData, "loading" | "connectionError" | "retry"> {
-  if (!row) return DEFAULT_DATA;
+function cacheKey(userId: string) {
+  return `scb_bank_data_${userId}`;
+}
 
+function readCachedProfile(userId: string): ProfileData | null {
+  try {
+    const raw = localStorage.getItem(cacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ProfileData;
+    if (!parsed?.userName) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedProfile(userId: string, profile: ProfileData) {
+  try {
+    localStorage.setItem(cacheKey(userId), JSON.stringify(profile));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function mapRowToBankData(row: Record<string, unknown>): ProfileData {
   return {
     userName: (row.full_name as string) || DEFAULT_DATA.userName,
     accountNumber: (row.account_number as string) || DEFAULT_DATA.accountNumber,
@@ -49,28 +73,72 @@ function mapRowToBankData(row: Record<string, unknown> | null): Omit<BankData, "
   };
 }
 
+function hasRealProfile(profile: ProfileData) {
+  return (
+    profile.userName !== DEFAULT_DATA.userName ||
+    profile.accountNumber !== DEFAULT_DATA.accountNumber ||
+    profile.balance !== 0 ||
+    profile.cardNumber !== DEFAULT_DATA.cardNumber
+  );
+}
+
+function isAuthOrConnectivityError(error: { message?: string; code?: string; status?: number } | null) {
+  if (!error) return false;
+  if (isNetworkError(error)) return true;
+
+  const message = (error.message ?? "").toLowerCase();
+  const code = (error.code ?? "").toUpperCase();
+
+  return (
+    message.includes("jwt") ||
+    message.includes("unauthorized") ||
+    message.includes("permission") ||
+    message.includes("not authenticated") ||
+    message.includes("failed to fetch") ||
+    code === "PGRST301" ||
+    code === "42501" ||
+    error.status === 401 ||
+    error.status === 403
+  );
+}
+
 export function BankDataProvider({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, isRecovering } = useAuth();
   const [data, setData] = useState<Omit<BankData, "retry">>({
     ...DEFAULT_DATA,
     loading: true,
     connectionError: null,
   });
+  const loadedUserIdRef = useRef<string | null>(null);
+  const lastGoodRef = useRef<ProfileData | null>(null);
+
+  const keepLastKnown = useCallback(
+    (message: string) => {
+      setData((prev) => {
+        const fallback =
+          (hasRealProfile(prev) ? prev : null) ||
+          lastGoodRef.current ||
+          (user ? readCachedProfile(user.id) : null) ||
+          prev;
+
+        return {
+          ...fallback,
+          loading: false,
+          connectionError: message,
+        };
+      });
+    },
+    [user]
+  );
 
   const fetchData = useCallback(async () => {
-    if (!user) {
-      setData({
-        ...DEFAULT_DATA,
-        loading: false,
-        connectionError: null,
-      });
-      return;
-    }
+    if (!user) return;
 
+    // Don't clear a good profile while reconnecting.
     setData((prev) => ({
       ...prev,
-      loading: true,
-      connectionError: null,
+      loading: !hasRealProfile(prev) && !lastGoodRef.current,
+      connectionError: prev.connectionError,
     }));
 
     try {
@@ -78,19 +146,26 @@ export function BankDataProvider({ children }: { children: ReactNode }) {
         .from("users")
         .select("*")
         .eq("id", user.id)
-        .single();
+        .maybeSingle();
 
       if (error) {
-        if (isNetworkError(error) || error.message?.toLowerCase().includes("jwt") || error.code === "PGRST301") {
-          setData((prev) => ({
-            ...prev,
-            loading: false,
-            connectionError: CONNECTION_PROBLEM_MESSAGE,
-          }));
+        // Empty/unauthorized results after a successful load are usually flaky auth/network.
+        if (isAuthOrConnectivityError(error) || loadedUserIdRef.current === user.id) {
+          keepLastKnown(CONNECTION_PROBLEM_MESSAGE);
           return;
         }
 
-        // Profile missing is different from a connectivity failure.
+        keepLastKnown(CONNECTION_PROBLEM_MESSAGE);
+        return;
+      }
+
+      if (!row) {
+        // RLS/auth blip often returns zero rows instead of a hard error.
+        if (loadedUserIdRef.current === user.id || lastGoodRef.current || readCachedProfile(user.id)) {
+          keepLastKnown(CONNECTION_PROBLEM_MESSAGE);
+          return;
+        }
+
         setData({
           ...DEFAULT_DATA,
           loading: false,
@@ -99,30 +174,43 @@ export function BankDataProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      const profile = mapRowToBankData(row);
+      lastGoodRef.current = profile;
+      loadedUserIdRef.current = user.id;
+      writeCachedProfile(user.id, profile);
       setData({
-        ...mapRowToBankData(row),
+        ...profile,
         loading: false,
         connectionError: null,
       });
-    } catch (error) {
-      setData((prev) => ({
-        ...prev,
-        loading: false,
-        connectionError: isNetworkError(error)
-          ? CONNECTION_PROBLEM_MESSAGE
-          : CONNECTION_PROBLEM_MESSAGE,
-      }));
+    } catch {
+      keepLastKnown(CONNECTION_PROBLEM_MESSAGE);
     }
-  }, [user]);
+  }, [user, keepLastKnown]);
 
   useEffect(() => {
     if (!user) {
+      if (!isRecovering) {
+        loadedUserIdRef.current = null;
+        lastGoodRef.current = null;
+        setData({
+          ...DEFAULT_DATA,
+          loading: false,
+          connectionError: null,
+        });
+      }
+      return;
+    }
+
+    // Hydrate instantly from cache so a later network blip can't blank the UI.
+    const cached = readCachedProfile(user.id);
+    if (cached) {
+      lastGoodRef.current = cached;
       setData({
-        ...DEFAULT_DATA,
-        loading: false,
+        ...cached,
+        loading: true,
         connectionError: null,
       });
-      return;
     }
 
     let active = true;
@@ -130,7 +218,7 @@ export function BankDataProvider({ children }: { children: ReactNode }) {
 
     const run = async () => {
       await fetchData();
-      if (!active) return;
+      if (!active || isRecovering) return;
 
       try {
         channel = supabase
@@ -139,25 +227,12 @@ export function BankDataProvider({ children }: { children: ReactNode }) {
             "postgres_changes",
             { event: "*", schema: "public", table: "users", filter: `id=eq.${user.id}` },
             () => {
-              void fetchData();
+              if (!isRecovering) void fetchData();
             }
           )
-          .subscribe((status) => {
-            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-              // Realtime can fail on restricted networks without blocking the dashboard.
-              setData((prev) =>
-                prev.connectionError
-                  ? prev
-                  : {
-                      ...prev,
-                      connectionError:
-                        "Live updates unavailable on this network. Account data may be delayed — tap Retry if details look wrong.",
-                    }
-              );
-            }
-          });
+          .subscribe();
       } catch {
-        // Ignore realtime setup failures; REST fetch is enough for the dashboard.
+        // Realtime is optional.
       }
     };
 
@@ -169,7 +244,7 @@ export function BankDataProvider({ children }: { children: ReactNode }) {
         void supabase.removeChannel(channel);
       }
     };
-  }, [user, fetchData]);
+  }, [user, fetchData, isRecovering]);
 
   return (
     <BankDataContext.Provider value={{ ...data, retry: fetchData }}>
