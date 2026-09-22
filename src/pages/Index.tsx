@@ -11,7 +11,15 @@ import { useAuth } from "@/hooks/useAuth";
 import { BANK_NAME } from "@/lib/brand";
 
 export default function Index() {
-  const { user, loading: authLoading, signOut, refreshSession, connectionError, clearConnectionError } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    signOut,
+    refreshSession,
+    connectionError,
+    clearConnectionError,
+    isRecovering,
+  } = useAuth();
   const navigate = useNavigate();
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [authNetworkIssue, setAuthNetworkIssue] = useState(false);
@@ -34,7 +42,7 @@ export default function Index() {
     let active = true;
 
     const verifyAuth = async () => {
-      if (authLoading) return;
+      if (authLoading || isRecovering) return;
 
       if (user) {
         if (!active) return;
@@ -52,7 +60,7 @@ export default function Index() {
         return;
       }
 
-      if (result.networkError) {
+      if (result.networkError || isRecovering) {
         setCheckingAuth(false);
         setAuthNetworkIssue(true);
         return;
@@ -66,7 +74,7 @@ export default function Index() {
     return () => {
       active = false;
     };
-  }, [authLoading, user, navigate, refreshSession]);
+  }, [authLoading, user, navigate, refreshSession, isRecovering]);
 
   const handleRetryAuth = async () => {
     setRetryingAuth(true);
@@ -77,9 +85,11 @@ export default function Index() {
         clearConnectionError();
         return;
       }
-      if (!result.networkError) {
-        navigate("/login", { replace: true });
+      if (result.networkError || isRecovering) {
+        setAuthNetworkIssue(true);
+        return;
       }
+      navigate("/login", { replace: true });
     } finally {
       setRetryingAuth(false);
     }
@@ -98,14 +108,18 @@ export default function Index() {
     );
   }
 
-  if (!user && authNetworkIssue) {
+  if (!user && (authNetworkIssue || isRecovering)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground px-4">
         <div className="w-full max-w-md space-y-4">
           <ConnectionBanner
-            message="Connection problem while checking your login. Check your internet or try a VPN, then tap Retry."
+            message={
+              isRecovering
+                ? "Reconnecting your session… Check your internet or try a VPN if this takes too long."
+                : "Connection problem while checking your login. Check your internet or try a VPN, then tap Retry."
+            }
             onRetry={handleRetryAuth}
-            retrying={retryingAuth}
+            retrying={retryingAuth || isRecovering}
           />
           <button
             type="button"
@@ -137,9 +151,12 @@ export default function Index() {
         setModalOpen={setModalOpen}
         serviceModalOpen={serviceModalOpen}
         setServiceModalOpen={setServiceModalOpen}
-        authConnectionError={connectionError}
+        authConnectionError={
+          connectionError ||
+          (isRecovering ? "Reconnecting your session… You will stay signed in." : null)
+        }
         onRetryAuth={handleRetryAuth}
-        retryingAuth={retryingAuth}
+        retryingAuth={retryingAuth || isRecovering}
       />
     </BankDataProvider>
   );
