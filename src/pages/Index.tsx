@@ -1,20 +1,21 @@
 import { useState, useEffect } from "react";
-import { Sun, Moon, LogOut, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, Receipt } from "lucide-react";
+import { Sun, Moon, LogOut, ArrowDownToLine, ArrowUpFromLine, ArrowLeftRight, Receipt, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import AccountSummary from "@/components/AccountSummary";
 import VirtualCard from "@/components/VirtualCard";
 import ActivationModal from "@/components/ActivationModal";
 import ServiceUnavailableModal from "@/components/ServiceUnavailableModal";
+import ConnectionBanner from "@/components/ConnectionBanner";
 import { useBankData, BankDataProvider } from "@/hooks/use-bank-data";
 import { useAuth } from "@/hooks/useAuth";
 import { BANK_NAME } from "@/lib/brand";
-import { Loader2 } from "lucide-react";
-
 
 export default function Index() {
-  const { user, loading: authLoading, signOut, refreshSession } = useAuth();
+  const { user, loading: authLoading, signOut, refreshSession, connectionError, clearConnectionError } = useAuth();
   const navigate = useNavigate();
   const [checkingAuth, setCheckingAuth] = useState(true);
+  const [authNetworkIssue, setAuthNetworkIssue] = useState(false);
+  const [retryingAuth, setRetryingAuth] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
   const [dark, setDark] = useState(() => {
@@ -36,15 +37,24 @@ export default function Index() {
       if (authLoading) return;
 
       if (user) {
+        if (!active) return;
         setCheckingAuth(false);
+        setAuthNetworkIssue(false);
         return;
       }
 
-      const session = await refreshSession();
+      const result = await refreshSession();
       if (!active) return;
 
-      if (session?.user) {
+      if (result.session?.user) {
         setCheckingAuth(false);
+        setAuthNetworkIssue(false);
+        return;
+      }
+
+      if (result.networkError) {
+        setCheckingAuth(false);
+        setAuthNetworkIssue(true);
         return;
       }
 
@@ -58,12 +68,58 @@ export default function Index() {
     };
   }, [authLoading, user, navigate, refreshSession]);
 
+  const handleRetryAuth = async () => {
+    setRetryingAuth(true);
+    try {
+      const result = await refreshSession();
+      if (result.session?.user) {
+        setAuthNetworkIssue(false);
+        clearConnectionError();
+        return;
+      }
+      if (!result.networkError) {
+        navigate("/login", { replace: true });
+      }
+    } finally {
+      setRetryingAuth(false);
+    }
+  };
+
   const handleLogout = async () => {
     await signOut();
     navigate("/login");
   };
 
-  if (authLoading || checkingAuth || !user) {
+  if (authLoading || checkingAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!user && authNetworkIssue) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background text-foreground px-4">
+        <div className="w-full max-w-md space-y-4">
+          <ConnectionBanner
+            message="Connection problem while checking your login. Check your internet or try a VPN, then tap Retry."
+            onRetry={handleRetryAuth}
+            retrying={retryingAuth}
+          />
+          <button
+            type="button"
+            onClick={() => navigate("/login", { replace: true })}
+            className="w-full rounded-xl border px-4 py-3 text-sm font-medium hover:bg-secondary transition-colors"
+          >
+            Back to login
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-foreground">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -81,6 +137,9 @@ export default function Index() {
         setModalOpen={setModalOpen}
         serviceModalOpen={serviceModalOpen}
         setServiceModalOpen={setServiceModalOpen}
+        authConnectionError={connectionError}
+        onRetryAuth={handleRetryAuth}
+        retryingAuth={retryingAuth}
       />
     </BankDataProvider>
   );
@@ -94,6 +153,9 @@ function DashboardView({
   setModalOpen,
   serviceModalOpen,
   setServiceModalOpen,
+  authConnectionError,
+  onRetryAuth,
+  retryingAuth,
 }: {
   dark: boolean;
   setDark: (value: boolean) => void;
@@ -102,8 +164,23 @@ function DashboardView({
   setModalOpen: (value: boolean) => void;
   serviceModalOpen: boolean;
   setServiceModalOpen: (value: boolean) => void;
+  authConnectionError: string | null;
+  onRetryAuth: () => void;
+  retryingAuth: boolean;
 }) {
   const data = useBankData();
+  const [retryingData, setRetryingData] = useState(false);
+
+  const bannerMessage = data.connectionError || authConnectionError;
+  const handleRetry = async () => {
+    setRetryingData(true);
+    try {
+      await onRetryAuth();
+      await data.retry();
+    } finally {
+      setRetryingData(false);
+    }
+  };
 
   const sidebarItems = [
     { label: "Deposit", icon: ArrowDownToLine },
@@ -114,7 +191,6 @@ function DashboardView({
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
       <header className="flex items-center justify-between px-4 md:px-8 py-4 border-b">
         <div className="flex items-center gap-2">
           <span className="text-lg font-bold">{BANK_NAME}</span>
@@ -138,8 +214,15 @@ function DashboardView({
         </div>
       </header>
 
+      {bannerMessage && (
+        <ConnectionBanner
+          message={bannerMessage}
+          onRetry={handleRetry}
+          retrying={retryingData || retryingAuth}
+        />
+      )}
+
       <div className="flex flex-1">
-        {/* Sidebar */}
         <aside className="hidden md:flex flex-col w-56 border-r py-6 px-3 gap-1 shrink-0">
           {sidebarItems.map((item) => (
             <button
@@ -155,7 +238,6 @@ function DashboardView({
           ))}
         </aside>
 
-        {/* Mobile bottom bar for sidebar items */}
         <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t bg-background/80 backdrop-blur-lg flex justify-around py-2 px-1">
           {sidebarItems.map((item) => (
             <button
@@ -170,19 +252,17 @@ function DashboardView({
           ))}
         </div>
 
-        {/* Content */}
         <main className="flex-1 px-4 md:px-8 py-8 max-w-5xl mx-auto w-full pb-20 md:pb-8">
           <div className="space-y-8">
-            {/* Welcome */}
             <div className="animate-slide-up">
               <p className="text-sm text-muted-foreground font-medium">Welcome back,</p>
-              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">{data.userName}</h1>
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+                {data.connectionError ? "Account temporarily unavailable" : data.userName}
+              </h1>
             </div>
 
-            {/* Account summary */}
             <AccountSummary />
 
-            {/* Card section */}
             <div className="space-y-5" style={{ animationDelay: "0.1s" }}>
               <h2 className="text-lg font-semibold animate-slide-up" style={{ animationDelay: "0.15s" }}>
                 Your Card
@@ -191,15 +271,16 @@ function DashboardView({
                 <VirtualCard />
                 <button
                   onClick={() => setModalOpen(true)}
+                  disabled={!!data.connectionError}
                   className="rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground
-                             btn-glow hover:brightness-110 transition-all active:scale-[0.98]"
+                             btn-glow hover:brightness-110 transition-all active:scale-[0.98]
+                             disabled:opacity-40 disabled:pointer-events-none"
                 >
                   Activate Card
                 </button>
               </div>
             </div>
 
-            {/* Transactions section */}
             <div className="animate-slide-up" style={{ animationDelay: "0.25s" }}>
               <h2 className="text-lg font-semibold mb-4">Transactions</h2>
               <div className="glass-card p-8 text-center">

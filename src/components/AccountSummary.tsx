@@ -45,8 +45,12 @@ export default function AccountSummary() {
           </div>
         </div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <RefreshCw className="w-3 h-3" />
-          Last updated just now
+          <RefreshCw className={`w-3 h-3 ${data.loading ? "animate-spin" : ""}`} />
+          {data.connectionError
+            ? "Connection problem — tap Retry above"
+            : data.loading
+              ? "Updating…"
+              : "Last updated just now"}
         </div>
       </div>
     </div>

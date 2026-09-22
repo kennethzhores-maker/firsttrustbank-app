@@ -22,14 +22,19 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      const session = await refreshSession();
-      if (!session) {
-        throw new Error("Login succeeded but session was not established. Please try again.");
+      const result = await refreshSession();
+      if (!result.session) {
+        throw new Error(
+          result.networkError
+            ? "Connection problem after login. Check your internet or try a VPN, then try again."
+            : "Login succeeded but session was not established. Please try again."
+        );
       }
 
       navigate("/", { replace: true });
-    } catch (err: any) {
-      setError(err.message || "Connection issue. Please try again.");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Connection issue. Please try again.";
+      setError(message);
     } finally {
       setLoading(false);
     }
