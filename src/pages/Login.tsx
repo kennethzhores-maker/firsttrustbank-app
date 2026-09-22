@@ -4,10 +4,11 @@ import { Loader2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import { BANK_NAME } from "@/lib/brand";
+import { isNetworkError } from "@/lib/network";
 
 export default function Login() {
   const navigate = useNavigate();
-  const { refreshSession } = useAuth();
+  const { acceptSession } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -19,22 +20,34 @@ export default function Login() {
     setError("");
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-      const result = await refreshSession();
-      if (!result.session) {
-        throw new Error(
-          result.networkError
-            ? "Connection problem after login. Check your internet or try a VPN, then try again."
-            : "Login succeeded but session was not established. Please try again."
-        );
+      if (signInError) {
+        if (isNetworkError(signInError) || signInError.message.toLowerCase().includes("fetch")) {
+          throw new Error(
+            "Failed to reach the server. Check your internet connection or try a VPN, then try again."
+          );
+        }
+        throw signInError;
       }
 
+      if (!data.session) {
+        throw new Error("Login succeeded but no session was returned. Please try again.");
+      }
+
+      // Apply session immediately — do not run recovery / refresh loops on login.
+      acceptSession(data.session);
       navigate("/", { replace: true });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Connection issue. Please try again.";
-      setError(message);
+      if (isNetworkError(err)) {
+        setError("Failed to reach the server. Check your internet connection or try a VPN, then try again.");
+      } else {
+        const message = err instanceof Error ? err.message : "Connection issue. Please try again.";
+        setError(message);
+      }
     } finally {
       setLoading(false);
     }

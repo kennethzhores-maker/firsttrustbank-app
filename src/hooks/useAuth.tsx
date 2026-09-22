@@ -31,15 +31,17 @@ function readSessionBackup(): SessionBackup | null {
 
 function writeSessionBackup(session: Session) {
   try {
-    const backup: SessionBackup = {
-      access_token: session.access_token,
-      refresh_token: session.refresh_token,
-      user: session.user,
-      expires_at: session.expires_at,
-    };
-    localStorage.setItem(SESSION_BACKUP_KEY, JSON.stringify(backup));
+    localStorage.setItem(
+      SESSION_BACKUP_KEY,
+      JSON.stringify({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        user: session.user,
+        expires_at: session.expires_at,
+      } satisfies SessionBackup)
+    );
   } catch {
-    // Ignore quota / private mode failures.
+    // Ignore storage failures.
   }
 }
 
@@ -62,6 +64,20 @@ function sessionFromBackup(backup: SessionBackup): Session {
   } as Session;
 }
 
+async function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Request timed out")), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export type RefreshSessionResult = {
   session: Session | null;
   networkError: boolean;
@@ -77,6 +93,7 @@ interface AuthContextType {
   isRecovering: boolean;
   signOut: () => Promise<void>;
   refreshSession: () => Promise<RefreshSessionResult>;
+  acceptSession: (session: Session) => void;
   clearConnectionError: () => void;
 }
 
@@ -89,12 +106,9 @@ const AuthContext = createContext<AuthContextType>({
   isRecovering: false,
   signOut: async () => {},
   refreshSession: async () => ({ session: null, networkError: false }),
+  acceptSession: () => {},
   clearConnectionError: () => {},
 });
-
-async function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
@@ -106,9 +120,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const sessionRef = useRef<Session | null>(null);
   const signOutIntentRef = useRef(false);
   const recoveringRef = useRef(false);
+  const hadSessionRef = useRef(false);
 
   useEffect(() => {
     sessionRef.current = session;
+    if (session) hadSessionRef.current = true;
   }, [session]);
 
   const clearConnectionError = useCallback(() => {
@@ -119,17 +135,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(next);
     sessionRef.current = next;
     if (next) {
+      hadSessionRef.current = true;
       if (options?.backup !== false) writeSessionBackup(next);
     }
   }, []);
 
+  const acceptSession = useCallback(
+    (next: Session) => {
+      signOutIntentRef.current = false;
+      recoveringRef.current = false;
+      setIsRecovering(false);
+      setConnectionError(null);
+      setLoading(false);
+      applySession(next);
+    },
+    [applySession]
+  );
+
   const checkAdminRole = useCallback(async (userId: string) => {
     try {
-      const { data, error } = await supabase
-        .from("users")
-        .select("role")
-        .eq("id", userId)
-        .maybeSingle();
+      const { data, error } = await withTimeout(
+        supabase.from("users").select("role").eq("id", userId).maybeSingle(),
+        8000
+      );
 
       if (error) {
         if (isNetworkError(error)) {
@@ -144,90 +172,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       if (isNetworkError(error)) {
         setConnectionError(CONNECTION_PROBLEM_MESSAGE);
-        return;
       }
-      setIsAdmin(false);
     }
   }, []);
 
-  const restoreFromBackup = useCallback(async (): Promise<RefreshSessionResult> => {
-    const backup = readSessionBackup();
-    if (!backup) {
-      return { session: null, networkError: false };
-    }
-
-    // Keep the UI logged in while we try to re-attach tokens to the Supabase client.
-    const softSession = sessionFromBackup(backup);
-    applySession(softSession, { backup: false });
-    setConnectionError(CONNECTION_PROBLEM_MESSAGE);
-
-    try {
-      const { data, error } = await supabase.auth.setSession({
-        access_token: backup.access_token,
-        refresh_token: backup.refresh_token,
-      });
-
-      if (data.session) {
-        applySession(data.session);
-        setConnectionError(null);
-        await checkAdminRole(data.session.user.id);
-        return { session: data.session, networkError: false };
-      }
-
-      if (error && isNetworkError(error)) {
-        return {
-          session: softSession,
-          networkError: true,
-          message: CONNECTION_PROBLEM_MESSAGE,
-        };
-      }
-
-      // Invalid/expired refresh token — only then force logout.
-      if (error) {
-        const message = error.message?.toLowerCase() ?? "";
-        const authDead =
-          message.includes("invalid") ||
-          message.includes("expired") ||
-          message.includes("refresh token");
-
-        if (authDead && !isNetworkError(error)) {
-          clearSessionBackup();
-          applySession(null);
-          setIsAdmin(false);
-          setConnectionError(null);
-          return { session: null, networkError: false, message: error.message };
-        }
-
-        return {
-          session: softSession,
-          networkError: true,
-          message: CONNECTION_PROBLEM_MESSAGE,
-        };
-      }
-
-      return {
-        session: softSession,
-        networkError: true,
-        message: CONNECTION_PROBLEM_MESSAGE,
-      };
-    } catch (error) {
-      return {
-        session: softSession,
-        networkError: true,
-        message: CONNECTION_PROBLEM_MESSAGE,
-      };
-    }
-  }, [applySession, checkAdminRole]);
-
   const refreshSession = useCallback(async (): Promise<RefreshSessionResult> => {
     try {
-      const { data, error } = await supabase.auth.getSession();
+      const { data, error } = await withTimeout(supabase.auth.getSession(), 8000);
 
       if (error) {
-        if (sessionRef.current || readSessionBackup()) {
-          return restoreFromBackup();
-        }
         setLoading(false);
+        // Keep current UI session if we already had one.
+        if (sessionRef.current) {
+          setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+          return {
+            session: sessionRef.current,
+            networkError: true,
+            message: CONNECTION_PROBLEM_MESSAGE,
+          };
+        }
         return { session: null, networkError: isNetworkError(error), message: error.message };
       }
 
@@ -235,75 +198,87 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applySession(data.session);
         setLoading(false);
         setConnectionError(null);
-        await checkAdminRole(data.session.user.id);
+        void checkAdminRole(data.session.user.id);
         return { session: data.session, networkError: false };
       }
 
-      // Supabase storage was cleared (common after failed refresh on bad networks).
-      if (sessionRef.current || readSessionBackup()) {
-        const restored = await restoreFromBackup();
-        setLoading(false);
-        return restored;
-      }
-
       setLoading(false);
-      setIsAdmin(false);
-      return { session: null, networkError: false };
-    } catch {
-      if (sessionRef.current || readSessionBackup()) {
-        const restored = await restoreFromBackup();
-        setLoading(false);
-        return restored;
-      }
+      return { session: sessionRef.current, networkError: false };
+    } catch (error) {
       setLoading(false);
+      if (sessionRef.current) {
+        setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+        return {
+          session: sessionRef.current,
+          networkError: true,
+          message: CONNECTION_PROBLEM_MESSAGE,
+        };
+      }
       return {
         session: null,
         networkError: true,
-        message: CONNECTION_PROBLEM_MESSAGE,
+        message: error instanceof Error ? error.message : CONNECTION_PROBLEM_MESSAGE,
       };
     }
-  }, [applySession, checkAdminRole, restoreFromBackup]);
+  }, [applySession, checkAdminRole]);
 
   const recoverSession = useCallback(async () => {
-    if (signOutIntentRef.current || recoveringRef.current) return;
+    // Only recover if we actually had a live session this visit (not a cold login page).
+    if (signOutIntentRef.current || recoveringRef.current || !hadSessionRef.current) {
+      return;
+    }
+
+    const backup = readSessionBackup();
+    if (!backup && !sessionRef.current) return;
 
     recoveringRef.current = true;
     setIsRecovering(true);
     setConnectionError(CONNECTION_PROBLEM_MESSAGE);
     setLoading(false);
 
-    // Immediately keep UI session from memory/backup so Index does not redirect.
-    const backup = readSessionBackup();
     if (!sessionRef.current && backup) {
       applySession(sessionFromBackup(backup), { backup: false });
     }
 
-    for (let attempt = 0; attempt < 5; attempt++) {
-      if (signOutIntentRef.current) break;
-
-      const recovered = await restoreFromBackup();
-      if (recovered.session && !recovered.networkError) {
-        setConnectionError(null);
-        recoveringRef.current = false;
-        setIsRecovering(false);
-        return;
-      }
-
-      // Keep soft session; wait and retry.
-      await sleep(2000 * (attempt + 1));
-    }
-
-    recoveringRef.current = false;
-    setIsRecovering(false);
-    // Still keep soft session if we have one — do not auto-logout.
-    if (sessionRef.current || readSessionBackup()) {
-      setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+    if (!backup) {
+      recoveringRef.current = false;
+      setIsRecovering(false);
       return;
     }
 
-    applySession(null);
-    setIsAdmin(false);
-  }, [applySession, restoreFromBackup]);
+    try {
+      const { data, error } = await withTimeout(
+        supabase.auth.setSession({
+          access_token: backup.access_token,
+          refresh_token: backup.refresh_token,
+        }),
+        8000
+      );
+
+      if (data.session) {
+        applySession(data.session);
+        setConnectionError(null);
+        void checkAdminRole(data.session.user.id);
+      } else if (error && !isNetworkError(error)) {
+        const message = error.message?.toLowerCase() ?? "";
+        const authDead =
+          message.includes("invalid") ||
+          message.includes("expired") ||
+          message.includes("refresh token");
+        if (authDead) {
+          clearSessionBackup();
+          // Keep soft UI session until user logs out manually; avoid surprise kick.
+          setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+        }
+      }
+    } catch {
+      // Soft session already applied — stay logged in in the UI.
+      setConnectionError(CONNECTION_PROBLEM_MESSAGE);
+    } finally {
+      recoveringRef.current = false;
+      setIsRecovering(false);
+    }
+  }, [applySession, checkAdminRole]);
 
   useEffect(() => {
     const syncAdminBypass = () => {
@@ -313,7 +288,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.addEventListener("storage", syncAdminBypass);
     window.addEventListener("admin-auth-changed", syncAdminBypass);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (nextSession) {
         signOutIntentRef.current = false;
         recoveringRef.current = false;
@@ -327,6 +304,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (signOutIntentRef.current) {
         clearSessionBackup();
+        hadSessionRef.current = false;
         applySession(null);
         setIsAdmin(false);
         setLoading(false);
@@ -335,8 +313,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Unexpected sign-out (usually failed token refresh on flaky networks).
-      if (event === "SIGNED_OUT" || event === "TOKEN_REFRESHED") {
+      // Only recover after an unexpected sign-out of an active session.
+      if (event === "SIGNED_OUT" && hadSessionRef.current) {
         void recoverSession();
       }
     });
@@ -356,10 +334,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsRecovering(false);
     setConnectionError(null);
     clearSessionBackup();
+    hadSessionRef.current = false;
     try {
-      await supabase.auth.signOut({ scope: "local" });
+      await withTimeout(supabase.auth.signOut({ scope: "local" }), 5000);
     } catch {
-      // Even if network fails, clear local app state.
+      // Clear local app state anyway.
     }
     window.localStorage.removeItem("admin_authenticated");
     setAdminBypass(false);
@@ -378,6 +357,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isRecovering,
         signOut,
         refreshSession,
+        acceptSession,
         clearConnectionError,
       }}
     >
