@@ -4,7 +4,7 @@ import { Loader2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/hooks/useAuth";
 import { BANK_NAME } from "@/lib/brand";
-import { isNetworkError } from "@/lib/network";
+import { formatAuthError } from "@/lib/network";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -26,11 +26,6 @@ export default function Login() {
       });
 
       if (signInError) {
-        if (isNetworkError(signInError) || signInError.message.toLowerCase().includes("fetch")) {
-          throw new Error(
-            "Failed to reach the server. Check your internet connection or try a VPN, then try again."
-          );
-        }
         throw signInError;
       }
 
@@ -38,16 +33,10 @@ export default function Login() {
         throw new Error("Login succeeded but no session was returned. Please try again.");
       }
 
-      // Apply session immediately — do not run recovery / refresh loops on login.
       acceptSession(data.session);
       navigate("/", { replace: true });
     } catch (err: unknown) {
-      if (isNetworkError(err)) {
-        setError("Failed to reach the server. Check your internet connection or try a VPN, then try again.");
-      } else {
-        const message = err instanceof Error ? err.message : "Connection issue. Please try again.";
-        setError(message);
-      }
+      setError(formatAuthError(err));
     } finally {
       setLoading(false);
     }

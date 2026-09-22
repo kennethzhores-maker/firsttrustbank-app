@@ -15,20 +15,20 @@ export function isNetworkError(error: unknown): boolean {
     const code = `${err.code ?? ""}`.toLowerCase();
     const name = `${err.name ?? ""}`.toLowerCase();
 
-    if (name.includes("abort") || name.includes("network")) return true;
+    // Real browser/network failures only — do not match generic words like "connection".
+    if (name === "typeerror" && message.includes("fetch")) return true;
+    if (name.includes("abort")) return true;
     if (code === "econnreset" || code === "etimedout" || code === "enotfound") return true;
-    if (typeof err.status === "number" && (err.status === 0 || err.status >= 500)) return true;
 
     return (
       message.includes("failed to fetch") ||
       message.includes("networkerror") ||
       message.includes("network request failed") ||
       message.includes("fetch failed") ||
-      message.includes("timeout") ||
-      message.includes("timed out") ||
-      message.includes("connection") ||
-      message.includes("offline") ||
-      message.includes("load failed")
+      message.includes("request timed out") ||
+      message.includes("load failed") ||
+      message.includes("err_network") ||
+      message.includes("err_connection")
     );
   }
 
@@ -39,5 +39,28 @@ export function isNetworkError(error: unknown): boolean {
   return false;
 }
 
+export function formatAuthError(error: unknown): string {
+  if (isNetworkError(error)) {
+    return "Could not reach the login server. Please try again in a moment.";
+  }
+
+  if (error instanceof Error && error.message) {
+    const message = error.message.toLowerCase();
+    if (message.includes("invalid login") || message.includes("invalid credentials")) {
+      return "Invalid email or password.";
+    }
+    if (message.includes("email not confirmed")) {
+      return "This email is not confirmed yet. Ask your admin to confirm the account.";
+    }
+    return error.message;
+  }
+
+  if (typeof error === "object" && error && "message" in error) {
+    return formatAuthError(new Error(String((error as { message: unknown }).message)));
+  }
+
+  return "Login failed. Please try again.";
+}
+
 export const CONNECTION_PROBLEM_MESSAGE =
-  "Connection problem. Your account data could not be loaded. Check your internet or try a VPN, then tap Retry.";
+  "Connection problem. Your account data could not be loaded. Tap Retry to try again.";

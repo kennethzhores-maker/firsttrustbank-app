@@ -3,9 +3,12 @@ import { useNavigate, Link } from "react-router-dom";
 import { Shield, Loader2, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { BANK_NAME } from "@/lib/brand";
+import { formatAuthError } from "@/lib/network";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function AdminLogin() {
   const navigate = useNavigate();
+  const { acceptSession } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -17,32 +20,32 @@ export default function AdminLogin() {
     setError("");
 
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
       if (signInError) throw signInError;
+      if (!data.session?.user) throw new Error("Login failed");
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error("Login failed");
+      acceptSession(data.session);
 
       const { data: profile, error: profileError } = await supabase
         .from("users")
         .select("role")
-        .eq("id", user.id)
+        .eq("id", data.session.user.id)
         .maybeSingle();
 
       if (profileError) throw profileError;
       if (profile?.role !== "admin") {
-        await supabase.auth.signOut();
+        await supabase.auth.signOut({ scope: "local" });
         throw new Error("Access denied. This account is not an admin.");
       }
 
       localStorage.setItem("admin_authenticated", "true");
       window.dispatchEvent(new Event("admin-auth-changed"));
       navigate("/admin");
-    } catch (err: any) {
-      setError(err.message || "Connection issue. Please try again.");
+    } catch (err: unknown) {
+      setError(formatAuthError(err));
     } finally {
       setLoading(false);
     }
